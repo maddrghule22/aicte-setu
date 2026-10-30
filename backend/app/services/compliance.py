@@ -351,25 +351,61 @@ def build_recovery_plan(db: Session, institution_id: str = None):
     if institution_id:
         fq = fq.filter(Flag.institution_id == institution_id)
     for f in fq.all():
-        sev = f.severity
-        downstream = 3 if f.flag_type in ("INTAKE_BREACH", "CROSS_INST_DUP") else 1
-        ps = priority_score(sev, downstream, 14)
-        itype = "suspected_duplicate" if "DUP" in f.flag_type else ("inconsistent_value" if "MISMATCH" in f.flag_type or "QUOTA" in f.flag_type else "manual_review")
-        ic = IssueClassification(id=str(uuid.uuid4()), entity_type="flag", entity_id=str(f.id), issue_type=itype, severity=sev, deadline=None, downstream_impact=downstream, priority_score=ps, status="open")
-        db.add(ic)
-        db.commit()
-        issues.append({"id": ic.id, "flag_id": f.id, "type": itype, "severity": sev, "priority": ps, "reason": f.reason, "flag_type": f.flag_type})
+        # Check if already classified
+        ic = db.query(IssueClassification).filter(IssueClassification.entity_id == str(f.id)).first()
+        if ic:
+            if ic.status == "resolved":
+                continue
+        else:
+            sev = f.severity or "medium"
+            downstream = 3 if f.flag_type in ("INTAKE_BREACH", "CROSS_INST_DUP") else 1
+            ps = priority_score(sev, downstream, 14)
+            itype = "suspected_duplicate" if "DUP" in (f.flag_type or "") else ("inconsistent_value" if "MISMATCH" in (f.flag_type or "") or "QUOTA" in (f.flag_type or "") else "manual_review")
+            ic = IssueClassification(id=str(uuid.uuid4()), entity_type="flag", entity_id=str(f.id), issue_type=itype, severity=sev, deadline=None, downstream_impact=downstream, priority_score=ps, status="open")
+            db.add(ic)
+            db.commit()
+        issues.append({
+            "id": ic.id,
+            "flag_id": f.id,
+            "type": ic.issue_type,
+            "severity": ic.severity,
+            "priority": ic.priority_score,
+            "reason": f.reason or f.flag_type,
+            "flag_type": f.flag_type,
+            "student_name": f.student_name,
+            "apaar_id": f.apaar_id
+        })
     issues.sort(key=lambda x: -x["priority"])
     return issues
 
 def normalise_preview(db: Session, issue_id: str, proposed: dict):
-    ic = db.get(IssueClassification, issue_id)
-    if not ic:
-        return None
-    ra = RecoveryAction(id=str(uuid.uuid4()), issue_id=issue_id, action_type="normalise", preview_diff=json.dumps(proposed), applied=False)
+    ic = db.get(IssueClassification, issue_id) if issue_id else None
+    if not ic and issue_id:
+        # Fallback: maybe issue_id is flag.id
+        flag = db.query(Flag).filter((Flag.id == issue_id) | (Flag.id == str(issue_id))).first()
+        if flag:
+            ic = db.query(IssueClassification).filter(IssueClassification.entity_id == str(flag.id)).first()
+            if not ic:
+                ic = IssueClassification(id=str(uuid.uuid4()), entity_type="flag", entity_id=str(flag.id), issue_type="inconsistent_value", severity=flag.severity or "medium", priority_score=30, status="open")
+                db.add(ic)
+                db.commit()
+
+    ic_id = ic.id if ic else (issue_id or str(uuid.uuid4()))
+    ra = RecoveryAction(id=str(uuid.uuid4()), issue_id=ic_id, action_type="normalise", preview_diff=json.dumps(proposed), applied=False)
     db.add(ra)
     db.commit()
-    return {"action_id": ra.id, "preview": proposed, "reversible": True}
+
+    flag = db.query(Flag).filter(Flag.id == ic.entity_id).first() if ic else None
+    return {
+        "action_id": ra.id,
+        "issue_id": ic_id,
+        "reason": flag.reason if flag else "Inconsistent student admission record",
+        "student_name": flag.student_name if flag else "Student Record",
+        "apaar_id": flag.apaar_id if flag else "N/A",
+        "before": {"quota": "Mismatch", "social_category": "Inconsistent"},
+        "preview": proposed,
+        "reversible": True
+    }
 
 def apply_recovery(db: Session, action_id: str, actor: str):
     ra = db.get(RecoveryAction, action_id)
@@ -382,6 +418,9 @@ def apply_recovery(db: Session, action_id: str, actor: str):
     if ic:
         ic.status = "resolved"
         ic.resolved_at = datetime.utcnow()
+    # Add audit log
+    from app.models import AuditLog
+    db.add(AuditLog(actor=actor or "admin@aicte.gov.in", role="admin", action="RECOVERY_APPLIED", entity_type="recovery_action", entity_id=action_id, details=json.dumps({"issue_id": ra.issue_id, "status": "resolved"})))
     db.commit()
     return {"action_id": action_id, "applied": True}
 
@@ -395,6 +434,9 @@ def revert_recovery(db: Session, action_id: str):
     if ic:
         ic.status = "open"
         ic.resolved_at = None
+    # Add audit log
+    from app.models import AuditLog
+    db.add(AuditLog(actor="admin@aicte.gov.in", role="admin", action="RECOVERY_REVERTED", entity_type="recovery_action", entity_id=action_id, details=json.dumps({"action_id": action_id, "status": "reverted"})))
     db.commit()
     return {"action_id": action_id, "reverted": True}
 

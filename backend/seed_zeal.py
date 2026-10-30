@@ -84,6 +84,35 @@ def seed_zeal():
                     count += 1
             db.commit()
             print(f"Added {count} student records to mock APAAR registry")
+
+        # 4. Seed Audit Logs if empty
+        from app.models import AuditLog
+        from datetime import datetime, timedelta
+        if db.query(AuditLog).count() == 0:
+            now = datetime.utcnow()
+            demo_logs = [
+                ("admin@aicte.gov.in", "admin", "SYSTEM_INITIALIZED", "system", "AICTE-SETU", '{"version": "1.0.0", "status": "active"}', 120),
+                ("admin@aicte.gov.in", "admin", "RULE_SET_ACTIVATED", "rule_set", "RULESET-A-2025", '{"jurisdiction": "National", "rules": 12}', 90),
+                ("nodal@zcoepune.edu", "institution", "BATCH_UPLOADED", "upload_batch", "BATCH-ZCOE-2026", '{"institution": "ZCOE-DEMO", "records": 30, "valid": 27, "flagged": 3}', 60),
+                ("system@aicte.gov.in", "system", "APAAR_REGISTRY_CROSSCHECK", "apaar_registry", "900000000001", '{"status": "MATCH", "hash": "sha256:7f83b1657ff1"}', 55),
+                ("system@aicte.gov.in", "system", "ANOMALY_DETECTED", "flag", "FLAG-ZCOE-01", '{"type": "DUP_IN_BATCH", "severity": "high"}', 50),
+                ("regional@aicte.gov.in", "regional", "CASE_CREATED", "compliance_case", "CASE-2026-042", '{"institution": "INST002", "type": "INTAKE_BREACH"}', 40),
+                ("nodal@inst001.edu", "institution", "BATCH_CONFIRMED", "upload_batch", "BATCH-INST001-01", '{"inserted": 60, "skipped": 0}', 30),
+                ("verifier@company.com", "verifier", "VERIFICATION_EXECUTED", "verification_request", "REQ-2026-881", '{"apaar_id": "110000000000", "consent": true}', 20),
+                ("auditor@aicte.gov.in", "auditor", "REPLAY_AUDIT_VERIFIED", "audit_ledger", "AUDIT-ROOT", '{"determinism": true, "integrity_hash": "sha256:4a9c8b7e"}', 10),
+            ]
+            for actor, role, action, et, eid, det, mins in demo_logs:
+                db.add(AuditLog(
+                    actor=actor,
+                    role=role,
+                    action=action,
+                    entity_type=et,
+                    entity_id=eid,
+                    details=det,
+                    created_at=now - timedelta(minutes=mins)
+                ))
+            db.commit()
+            print("Seeded demo audit logs")
     finally:
         db.close()
 

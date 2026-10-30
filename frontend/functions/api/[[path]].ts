@@ -4,7 +4,7 @@ interface Env {
 
 export const onRequest: PagesFunction<Env> = async (context) => {
   const { request, env } = context;
-  const origin = env.API_ORIGIN || "https://imagination-describing-sleeve-sons.trycloudflare.com";
+  const origin = env.API_ORIGIN || "https://outstanding-accurately-syndication-demonstrated.trycloudflare.com";
   
   const url = new URL(request.url);
   // Strip /api prefix when forwarding to target if target is root, or keep it if target expects /api
