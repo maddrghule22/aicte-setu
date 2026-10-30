@@ -44,10 +44,15 @@ def process_upload(db, institution_id, records, file_name):
     existing = db.query(Student).filter(Student.apaar_id.isnot(None)).all()
     existing_list = [{"apaar_id": s.apaar_id, "institution_id": s.institution_id, "status": s.status} for s in existing]
 
+    # normalize records first
+    norm_records = [normalize_record(r) for r in records]
+    for r in norm_records:
+        r["institution_id"] = r.get("institution_id") or institution_id
+
     # intake check groups
     intake_breaches = []
     groups = {}
-    for i, r in enumerate(records):
+    for i, r in enumerate(norm_records):
         key = (r.get("programme"), r.get("branch"), r.get("year"))
         groups.setdefault(key, []).append((i, r))
 
@@ -65,10 +70,7 @@ def process_upload(db, institution_id, records, file_name):
     rejected_count = 0
     all_errors = []
 
-    for idx, raw in enumerate(records):
-        # normalize keys
-        rec = normalize_record(raw)
-        rec["institution_id"] = rec.get("institution_id") or institution_id
+    for idx, rec in enumerate(norm_records):
         row_errors = []
 
         # APAAR validation
@@ -81,7 +83,7 @@ def process_upload(db, institution_id, records, file_name):
 
         # rules
         from app.services.rules import run_rules
-        rule_errs = run_rules(rec, records, idx, institution_id, existing_list)
+        rule_errs = run_rules(rec, norm_records, idx, institution_id, existing_list)
         row_errors.extend(rule_errs)
 
         # intake breach row-level
@@ -199,24 +201,24 @@ def confirm_batch(batch_id: str, payload: dict = Body(default={}), user=Depends(
     return {"batchId": batch_id, "inserted": inserted, "skipped": skipped}
 
 def normalize_record(r):
-    # map common variants
+    # map common variants across various ERPs and AICTE templates
     mapping = {
-        "apaar_id": ["apaar_id", "apaar", "APAAR ID", "APAAR_ID"],
-        "name": ["name", "student_name", "student name", "Name"],
-        "dob": ["dob", "date_of_birth", "date of birth", "DOB"],
+        "apaar_id": ["apaar_id", "apaar", "APAAR ID", "APAAR_ID", "apaarId"],
+        "name": ["name", "student_name", "student name", "Name", "student_full_name", "full_name", "studentFullName"],
+        "dob": ["dob", "date_of_birth", "date of birth", "DOB", "dateOfBirth"],
         "gender": ["gender", "Gender"],
-        "parent_name": ["parent_name", "parent name", "father_name"],
+        "parent_name": ["parent_name", "parent name", "father_name", "fatherName"],
         "mobile": ["mobile", "phone", "contact"],
         "email": ["email", "e-mail"],
-        "institution_id": ["institution_id", "institution", "inst_id"],
-        "programme": ["programme", "program", "course"],
-        "branch": ["branch", "specialization", "specialisation"],
-        "year": ["year", "year_of_study", "study year"],
+        "institution_id": ["institution_id", "institution", "inst_id", "institution_code", "college_code"],
+        "programme": ["programme", "program", "course", "programme_code", "degree"],
+        "branch": ["branch", "specialization", "specialisation", "programme_name", "discipline", "branch_name"],
+        "year": ["year", "year_of_study", "study year", "admission_year", "academic_year"],
         "admission_date": ["admission_date", "admission date"],
-        "admission_mode": ["admission_mode", "admission mode"],
+        "admission_mode": ["admission_mode", "admission mode", "admission_type"],
         "quota": ["quota", "admission_quota"],
         "social_category": ["social_category", "category"],
-        "is_nri": ["is_nri", "nri"],
+        "is_nri": ["is_nri", "nri", "is_nri_oci_fn"],
         "is_oci": ["is_oci", "oci"],
         "is_foreign": ["is_foreign", "foreign_national", "fn"],
         "is_supernumerary": ["is_supernumerary", "supernumerary"],
@@ -225,7 +227,7 @@ def normalize_record(r):
         "entrance_exam": ["entrance_exam", "entrance exam"],
         "entrance_rank": ["entrance_rank", "rank"],
         "doc_ref": ["doc_ref", "document_ref", "supporting_doc"],
-        "status": ["status"],
+        "status": ["status", "enrollment_status"],
     }
     out = {}
     for canon, variants in mapping.items():
@@ -235,6 +237,14 @@ def normalize_record(r):
                 break
         if canon not in out:
             out[canon] = r.get(canon)
+
+    # Heuristic: if programme looks like a branch code (e.g. ZCOE-CSE) and programme_name is present
+    if out.get("programme") and str(out["programme"]).startswith("ZCOE-"):
+        out["branch"] = out.get("branch") or r.get("programme_name")
+        out["programme"] = "B.Tech"
+    elif not out.get("programme") and out.get("branch"):
+        out["programme"] = "B.Tech"
+
     # type conversions
     if out.get("is_nri") is not None:
         out["is_nri"] = str(out["is_nri"]).strip().lower() in ("true", "1", "yes", "y")
@@ -246,7 +256,8 @@ def normalize_record(r):
         out["is_supernumerary"] = str(out["is_supernumerary"]).strip().lower() in ("true", "1", "yes", "y")
     if out.get("year") is not None:
         try:
-            out["year"] = int(out["year"])
+            val = str(out["year"]).split("-")[0].strip()
+            out["year"] = int(val)
         except (ValueError, TypeError):
             pass
     if out.get("entrance_rank") not in (None, ""):

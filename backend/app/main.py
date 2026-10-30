@@ -22,6 +22,11 @@ def startup():
     # seed if empty
     from app.seed import run_seed
     run_seed()
+    try:
+        from seed_zeal import seed_zeal
+        seed_zeal()
+    except Exception as e:
+        print("seed_zeal error:", e)
     from app.services.compliance import seed_rule_sets
     from app.database import SessionLocal
     db = SessionLocal()
