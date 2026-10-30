@@ -10,7 +10,7 @@ app = FastAPI(title="AICTE-SETU API", version="1.0.0", description="APAAR-based 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
-    allow_origin_regex=r"https://([a-z0-9-]+\.)?aicte-setu\.pages\.dev",
+    allow_origin_regex=r"https://.*\.pages\.dev|http://localhost:.*",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
